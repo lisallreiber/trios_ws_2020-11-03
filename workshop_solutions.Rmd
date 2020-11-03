@@ -1,0 +1,79 @@
+# Solutions
+
+## Exercise Labels: 
+- What is the variable Label of the last variable in the dataset?
+- What are the value labels?
+
+```{r}
+soepis_igene_raw %>% select(ncol(.)) %>% get_label
+soepis_igene_raw %>% select(length(soepis_igene_raw)) %>% get_labels
+```
+
+## Exercise Data Exploration:
+- Get a feel for the dataset and look into a few other Variables:
+- How would you describe the format of the data (wide or long?)
+```{r}
+igene_lab %>% select(pid) %>% n_distinct()
+igene_lab %>% select(pid, syear) %>% n_distinct()
+igene_lab %>% count(syear)
+```
+
+## Exercise Big 5:
+
+- Generate a dataset that contains the information on the big 5
+- join the ppfad data and big5 data into one dataset
+  - watch out for the structure of the datasets (identifier keys)
+
+Hint:
+- the p [Variables from the Individual Question Module](https://paneldata.org/soep-is/data/p) dataset contains information from the person individual questionnaire on the person level, which all adults get (no children)
+- [Psychological Scales Manual SOEP](https://www.diw.de/sixcms/detail.php?id=diw_01.c.554370.de)
+
+```{r}
+p_igene <- import_soep("p.dta") %>% 
+  semi_join(ppfad_igene_long %>% distinct(pid), by = "pid")
+```
+
+```{r}
+big5_igene <- p_igene %>% 
+  select(
+    # ID's
+    pid, syear,
+    # Personality
+    b5_open_1 = plh0212,
+    b5_open_2 = plh0215,
+    b5_open_3 = plh0220,
+    b5_open_4 = plh0225,
+    b5_consc_1 = plh0218,
+    b5_consc_2 = plh0222,
+    b5_extra_1 = plh0213,
+    b5_extra_2 = plh0219,
+    b5_extra_3 = plh0223,
+    b5_agree_1 = plh0214,
+    b5_agree_2 = plh0217,
+    b5_agree_3 = plh0224,
+    b5_neuro_1 = plh0216,
+    b5_neuro_2 = plh0221,
+    b5_neuro_3 = plh0226
+    ) %>% 
+  codebook::rescue_attributes(p_igene) %>% 
+  codebook::detect_missing(learn_from_labels = T, 
+                                negative_values_are_missing = T, 
+                                ninety_nine_problems = F, 
+                                only_labelled = F) 
+```
+
+## Merge Multiple Datasets
+
+We starts with ppfad and add igene data, then big 5
+
+```{r}
+tidylog_on()
+
+igene_data <- ppfad_igene_long %>% 
+  left_join(big5_igene, by = c("pid", "syear")) %>% 
+  codebook::rescue_attributes(ppfad_igene_long) %>% 
+  codebook::rescue_attributes(big5_igene)
+```
+
+
+

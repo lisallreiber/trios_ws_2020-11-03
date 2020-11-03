@@ -1,0 +1,268 @@
+---
+title: "SOEP-IS Workshop"
+author: "Lisa Reiber"
+date: '2020-11-03'
+output:
+  html_document:
+    code_folding: show
+    df_print: paged
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = FALSE, warning = TRUE) 
+
+#' show two significant digits tops
+options(digits = 2)
+#' tend not to show scientific notation, because we're just psychologists
+options(scipen = 7)
+#' make output a bit wider
+options(width = 190)
+#' set a seed to make analyses depending on random number generation reproducible
+set.seed(2411) # if you use your significant other's birthday make sure you stay together for the sake of reproducibility
+
+source(here::here("00_packages.R"))
+source(here::here("00_functions.R"))
+
+# Tidylog off = list(), tidylog on = NULL
+# options("tidylog.display" = NULL)
+tidylog_off()
+```
+
+# Overall Goal
+
+Join information from different SOEP-IS datasets and survey years. 
+
+1. Import SOEP-IS data and generate sample of interest.
+2. Find additional variables of interest (Big 5)
+3. Join everything together.
+
+Extra:
+
+- How to work with tidylog
+- How to work with labelled data
+- How to work reproducible
+
+# Import SOEP Data
+
+## set the paths to confidential data 
+
+this step needs to be changed by hand for every local computer. 
+Define the relative paths to the data, from wherever you saved the .Rproj file.
+```{r}
+path_soep <- here::here("../../data/00_raw/SOEP/")
+
+path_soepisv36 <- paste0(path_soep, "SOEP_v36/Gene/")
+path_soepisv34 <- paste0(path_soep, "SOEP_v34/soep-is.2017_stata_en/soep-is.2017_stata_en/")
+```
+
+# Define sample of interest
+
+- What is our sample of interest?
+
+Our sample of interests are the participants of the SOEP-IS v36 sample with valid saliva probes.
+
+
+## Import igene sample
+```{r}
+soepis_igene_raw <- import_soep("Inno19F_IGENE.dta", path_soepisv36)
+```
+
+check it out
+```{r}
+# soepis_igene_raw %>% glimpse() 
+# soepis_igene_raw %>% View() 
+# soepis_igene_raw %>% head() %>% str() 
+soepis_igene_raw %>% head()
+
+```
+
+Where are the value labels?
+In the attributes. Here is an example on how to get variable and value labels of the igene06 variable
+```{r}
+soepis_igene_raw %>% select(igene06) %>% str 
+soepis_igene_raw %>% select(igene06) %>% sjlabelled::get_label() 
+soepis_igene_raw %>% select(igene06) %>% sjlabelled::get_labels()
+```
+
+### Exercise Labels: 
+- What is the variable Label of the last variable in the dataset?
+- What are the value labels?
+
+## Generate Labelled Dataset
+```{r}
+igene_lab <- soepis_igene_raw %>% mutate_all(sjlabelled::as_label) 
+
+# generate a list of frequency tables for the show_table function
+tables_list <- purrr::map(igene_lab, janitor::tabyl)
+tables_list_l <- tables_list
+names(tables_list_l) <- purrr::map_chr(igene_lab, get_label) 
+```
+
+check out the differnence: Example for variable igene06 
+```{r}
+# soepis_igene_raw %>% select(igene06) %>% View()
+# soepis_igene_raw %>% select(igene06) %>% str()
+# soepis_igene_raw %>% tabyl(igene06)
+soepis_igene_raw %>% count(igene06)
+```
+
+We want to know what the variable stands for and what the value labels are:
+```{r}
+# igene_lab %>% show_table("igene06", tidy = FALSE)
+igene_lab %>% show_table("igene06", tidy = TRUE)
+```
+
+### Exercise Data Exploration:
+- Get a feel for the dataset and look into a few other Variables:
+- How would you describe the format of the data (wide or long?)
+```{r}
+
+```
+
+## Filter for valid indivdiuals
+```{r}
+igene_sample <- igene_lab %>% 
+      filter(probe == "ans Labor geschickt") %>% 
+      mutate(pid = as_numeric(pid))
+```
+
+# Import and subset ppfad data
+
+ppfad (Person-related Meta-dataset) is the most extensive dataset, including most peole who ever participated in the SOEP-IS. It is therefore used as the “base” dataset, onto which the other information will be merged. [ppfad documentation](https://paneldata.org/soep-is/data/ppfad)
+```{r}
+ppfad_wide <- import_soep("ppfad.dta") %>% 
+    select(# time invariant
+           pid,   
+           cid,
+           psample,
+           sex,
+           gebjahr,
+           gebmonat,
+           # time variant
+           starts_with("hid"),
+           contains("netto")
+           ) 
+
+ppfad_igene_wide <- ppfad_wide %>% 
+  # filter to keep only individuals from igene_sample
+  semi_join(igene_sample %>% distinct(pid), by = "pid") 
+```
+this format is in wide format, but we want it in long  format
+
+wide: one row per individual (pid)
+long: muliple rows per individual, unique rows per individual and year (pid, syear)
+
+```{r}
+ppfad_igene_wide %>% names
+```
+
+```{r}
+time_invariant_vars <- c("pid", "cid", "psample", "sex", "gebjahr", "gebmonat")
+
+ppfad_labels <- ppfad_igene_wide %>% select(netto = netto00)
+
+ppfad_igene_long <- ppfad_igene_wide %>% 
+         pivot_longer(cols = -all_of(time_invariant_vars), 
+                      names_to = "var_syear", 
+                      values_to = "value") %>% 
+         tidyr::separate(var_syear, into = c("var", "syear"), sep = -2) %>% 
+         mutate(syear = ifelse(syear < 40, paste0("20", syear), paste0("19", syear))) %>% 
+         pivot_wider(names_from = "var", 
+                     values_from = "value") %>% 
+         codebook::rescue_attributes(ppfad_labels) %>% 
+         mutate(syear = as.numeric(syear),
+                netto_l = sjlabelled::as_label(.$netto),
+                sex_l = sjlabelled::as_label(.$sex)) %>% 
+         sjlabelled::var_labels(syear = "Survey Year",
+                             netto = "Survey Status",
+                             hid = "Household Number") 
+
+#simulate v35 and v36 (if you work with the newest version, you dont need that)
+simulate_waves = TRUE
+
+if (simulate_waves == TRUE) {
+    ppfad_v35 <- ppfad_igene_long %>% 
+                  select(all_of(time_invariant_vars)) %>% 
+                  distinct(pid, .keep_all = TRUE) %>%
+                  mutate(syear = 2018)
+    
+    ppfad_v36 <- ppfad_igene_long %>% 
+                  select(all_of(time_invariant_vars)) %>% 
+                  distinct(pid, .keep_all = TRUE) %>%
+                  mutate(syear = 2019)
+                  
+    ppfad_igene_long <- ppfad_igene_long %>% 
+        bind_rows(ppfad_v35) %>% 
+        bind_rows(ppfad_v36) %>%
+        rescue_attributes(ppfad_igene_long)
+}
+```
+
+```{r}
+ppfad_igene_long %>% names
+# ppfad_igene_long %>% tabyl(syear)
+```
+
+
+# Find big 5
+
+Now we want to add the available information on the big 5 to our sample of interest.
+
+## Exercise:
+
+- Generate a dataset that contains the information on the big 5 `big5_igene`
+- join the ppfad data and big5 data into one dataset
+  - watch out for the structure of the datasets (identifier keys)
+  
+Hint:
+- the p [Variables from the Individual Question Module](https://paneldata.org/soep-is/data/p) dataset contains information from the person individual questionnaire on the person level, which all adults get (no children)
+- [Psychological Scales Manual SOEP](https://www.diw.de/sixcms/detail.php?id=diw_01.c.554370.de)
+
+
+```{r, child = "workshop_solutions.Rmd"}
+```
+
+
+# Show Distributions
+
+We starts with ppfad and add igene data, then big 5 `big5_igene`
+
+```{r}
+tidylog_on()
+
+igene_data <- ppfad_igene_long %>% 
+  left_join(big5_igene, by = c("pid", "syear")) %>% 
+  codebook::rescue_attributes(ppfad_igene_long) %>% 
+  codebook::rescue_attributes(big5_igene)
+
+igene_data_cl <- igene_data %>%
+  codebook::detect_missing(learn_from_labels = T, 
+                           negative_values_are_missing = T, 
+                           only_labelled = F)
+```
+
+```{r}
+tidylog_off()
+
+igene_data_l <- igene_data_cl %>% mutate_all(sjlabelled::as_label)
+
+# generate a list of frequency tables for the show_table function
+tables_list <- purrr::map(igene_data_l, ~janitor::tabyl(.x, show_missing_levels = FALSE))
+tables_list_l <- tables_list
+names(tables_list_l) <- purrr::map_chr(igene_data_l, sjlabelled::get_label) 
+```
+
+```{r}
+igene_data_l %>% tabyl(syear, b5_open_2, show_missing_levels = F)
+
+igene_data_l %>% tabyl(b5_open_1) 
+```
+
+```{r}
+igene_data_l %>% tabyl(syear, b5_open_3, show_missing_levels = F)
+```
+
+
+
